@@ -1,0 +1,98 @@
+name: Unzip Project Into Repo
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "*.zip"
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find ZIP
+        id: zip
+        shell: bash
+        run: |
+          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP" ]; then
+            echo "No ZIP file found."
+            exit 1
+          fi
+
+          echo "Found: $ZIP"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Extract project
+        shell: bash
+        run: |
+          set -e
+
+          ZIP="${{ steps.zip.outputs.zip }}"
+          TEMP="$RUNNER_TEMP/project"
+
+          rm -rf "$TEMP"
+          mkdir -p "$TEMP"
+
+          unzip -q "$ZIP" -d "$TEMP"
+
+          # If the ZIP contains one top-level directory,
+          # use its contents as the repository root.
+          COUNT=$(find "$TEMP" -mindepth 1 -maxdepth 1 | wc -l)
+
+          if [ "$COUNT" -eq 1 ] && [ -d "$(find "$TEMP" -mindepth 1 -maxdepth 1 -type d)" ]; then
+            ROOT=$(find "$TEMP" -mindepth 1 -maxdepth 1 -type d)
+          else
+            ROOT="$TEMP"
+          fi
+
+          echo "Project root: $ROOT"
+
+          # Remove everything from the repository except:
+          # .git, the ZIP, and this workflow.
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name ".git" \
+            ! -name ".github" \
+            ! -name "$(basename "$ZIP")" \
+            -exec rm -rf {} +
+
+          # Remove existing workflow files except this one.
+          find .github/workflows -type f \
+            ! -name "unpack.yml" \
+            -delete 2>/dev/null || true
+
+          # Copy extracted project into repository root.
+          cp -a "$ROOT"/. .
+
+          echo "Repository after extraction:"
+          find . -maxdepth 3 -type f \
+            ! -path "./.git/*" \
+            ! -name "*.zip" \
+            | sort
+
+      - name: Commit changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "Unpack project archive"
+
+          git push
